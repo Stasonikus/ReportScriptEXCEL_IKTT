@@ -792,8 +792,83 @@ def build_table3(report_1_norm: Any, cfg: Dict[str, Any]) -> Any:
 
 
 def build_table4(report_1_norm: Any, report_2_raw: Any, cfg: Dict[str, Any]) -> Any:
-    print("[builders.build_table4] TODO (report_1 + report_2)")
-    return {"table": "Таблица4", "rows": 0}
+
+    print("[builders.build_table4] start")
+
+    from openpyxl import load_workbook
+
+    path = report_2_raw["path"]
+
+    wb = load_workbook(path, data_only=True)
+    ws = wb.active
+
+    rows = []
+
+    print(f"[builders.build_table4] sheet = {ws.title}")
+
+    # ищем колонки
+    point_col = None
+    count_col = None
+
+    for c in range(1, ws.max_column + 1):
+
+        val = ws.cell(row=1, column=c).value
+
+        if not isinstance(val, str):
+            continue
+
+        v = val.strip().lower()
+
+        # точка
+        if "точ" in v or "пп" in v or "апп" in v:
+            point_col = c
+
+        # количество
+        if "кол" in v and "нп" in v:
+            count_col = c
+
+    print(
+        f"[builders.build_table4] point_col={point_col} count_col={count_col}"
+    )
+
+    if point_col is None or count_col is None:
+        print("[builders.build_table4] FAIL: required columns not found")
+
+        return {
+            "table": "Таблица4",
+            "stage": "data-only",
+            "rows": [],
+        }
+
+    # читаем строки
+    for r in range(2, ws.max_row + 1):
+
+        point = ws.cell(row=r, column=point_col).value
+        count = ws.cell(row=r, column=count_col).value
+
+        if point is None:
+            continue
+
+        if count is None:
+            count = 0
+
+        rows.append(
+            {
+                "Точка": str(point),
+                "Количество НП": count,
+            }
+        )
+
+    print(f"[builders.build_table4] rows={len(rows)}")
+
+    for row in rows:
+        print(row)
+
+    return {
+        "table": "Таблица4",
+        "stage": "data-only",
+        "rows": rows,
+    }
 
 
 def build_table5(report_1_norm: Any, cfg: Dict[str, Any]) -> Any:
