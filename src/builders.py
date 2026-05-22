@@ -1,6 +1,7 @@
 # src/builders.py
 from __future__ import annotations
 
+import datetime as dt
 import re
 from typing import Any, Dict
 
@@ -795,78 +796,199 @@ def build_table4(report_1_norm: Any, report_2_raw: Any, cfg: Dict[str, Any]) -> 
 
     print("[builders.build_table4] start")
 
-    from openpyxl import load_workbook
-
-    path = report_2_raw["path"]
-
-    wb = load_workbook(path, data_only=True)
-    ws = wb.active
-
-    rows = []
+    ws = report_2_raw["ws"]
 
     print(f"[builders.build_table4] sheet = {ws.title}")
 
-    # ищем колонки
-    point_col = None
-    count_col = None
+    def normalize_name(value: Any) -> str:
+        if value is None:
+            return ""
 
-    for c in range(1, ws.max_column + 1):
+        s = str(value).lower()
+        s = s.replace("\n", " ")
+        s = s.replace("\r", " ")
+        s = s.replace("ё", "е")
+        s = s.replace("ө", "о")
+        s = s.replace("ұ", "у")
+        s = s.replace("ү", "у")
+        s = s.replace("қ", "к")
+        s = s.replace("ғ", "г")
+        s = s.replace("ә", "а")
+        s = s.replace("і", "и")
+        s = s.replace("ң", "н")
+        s = re.sub(r"[\"'«»]", " ", s)
+        s = re.sub(r"\s+", " ", s)
+        return s.strip()
 
-        val = ws.cell(row=1, column=c).value
+    def parse_date(value: Any) -> dt.date | None:
+        if isinstance(value, dt.datetime):
+            return value.date()
 
-        if not isinstance(val, str):
-            continue
+        if isinstance(value, dt.date):
+            return value
 
-        v = val.strip().lower()
+        if isinstance(value, str):
+            s = value.strip()
+            for fmt in ("%d.%m.%Y", "%d.%m.%Y г.", "%Y-%m-%d"):
+                try:
+                    return dt.datetime.strptime(s, fmt).date()
+                except ValueError:
+                    pass
 
-        # точка
-        if "точ" in v or "пп" in v or "апп" in v:
-            point_col = c
+        return None
 
-        # количество
-        if "кол" in v and "нп" in v:
-            count_col = c
+    def parse_count(value: Any) -> int:
+        if value is None:
+            return 0
 
-    print(
-        f"[builders.build_table4] point_col={point_col} count_col={count_col}"
-    )
+        if isinstance(value, (int, float)):
+            return int(value)
 
-    if point_col is None or count_col is None:
-        print("[builders.build_table4] FAIL: required columns not found")
+        if isinstance(value, str):
+            s = value.strip().replace(" ", "").replace(",", ".")
+            if not s:
+                return 0
 
+            try:
+                return int(float(s))
+            except ValueError:
+                return 0
+
+        return 0
+
+    date_candidates: list[tuple[int, dt.date]] = []
+
+    for c in range(2, ws.max_column + 1):
+        d = parse_date(ws.cell(row=2, column=c).value)
+        if d is not None:
+            date_candidates.append((c, d))
+
+    today = dt.date.today()
+    actual_candidates = [(c, d) for c, d in date_candidates if d <= today]
+
+    if actual_candidates:
+        count_col, actual_date = max(actual_candidates, key=lambda x: (x[1], x[0]))
+    elif date_candidates:
+        count_col, actual_date = max(date_candidates, key=lambda x: (x[1], x[0]))
+    else:
+        print("[builders.build_table4] FAIL: date columns not found in row 2")
         return {
             "table": "Таблица4",
             "stage": "data-only",
             "rows": [],
+            "date": None,
+            "date_label": "",
         }
 
-    # читаем строки
-    for r in range(2, ws.max_row + 1):
+    print(
+        f"[builders.build_table4] actual_date={actual_date:%d.%m.%Y} "
+        f"count_col={count_col}"
+    )
 
-        point = ws.cell(row=r, column=point_col).value
-        count = ws.cell(row=r, column=count_col).value
+    source_values: Dict[str, int] = {}
 
-        if point is None:
+    for r in range(3, ws.max_row + 1):
+        point = ws.cell(row=r, column=1).value
+        key = normalize_name(point)
+
+        if not key:
             continue
 
-        if count is None:
-            count = 0
+        source_values[key] = parse_count(ws.cell(row=r, column=count_col).value)
 
-        rows.append(
-            {
-                "Точка": str(point),
-                "Количество НП": count,
-            }
-        )
+    def value_for(*source_names: str) -> int:
+        for source_name in source_names:
+            key = normalize_name(source_name)
+            if key in source_values:
+                return source_values[key]
+
+        print(f"[builders.build_table4] WARN: source row not found: {source_names[0]}")
+        return 0
+
+    output_points = [
+        ("тп «Тажен»", ("Тәжен (авто)", "Тажен (авто)")),
+        ("тп «Темир-Баба»", ("Темір-баба (авто)", "Темир-баба (авто)")),
+        ("тп «Болашак»", ("Болашақ ж/д", "Болашак ж/д")),
+        ("тп «Курык»", ("Құрык-порт ж/д", "Курык-порт ж/д", "Құрық-порт ж/д")),
+        ("тп «Морпорт»", ("Ақтау-порт ж/д", "Актау-порт ж/д")),
+        ("тп «Оазис»", ("Оазис (Бейнеу) ж/д",)),
+        ("тп «Бахты»", ("Бақты (авто)", "Бакты (авто)")),
+        ("тп «Майкапчагай»", ("Майқапшағай (авто)", "Майкапчагай (авто)")),
+        ("тп «Б. Конысбаева»", ("Б. Қонысбаева (авто)", "Б. Конысбаева (авто)")),
+        ("тп «Казыгурт»", ("Қазығурт (авто)", "Казыгурт (авто)", "Казығұрт (авто)")),
+        ("тп «ст. Сарыагаш»", ("Сарыағаш ж/д", "Сарыагаш ж/д")),
+        ("тп «Атамекен»", ("Атамекен (авто)",)),
+        ("тп «Калжат»", ("Қалжат (авто)", "Калжат (авто)")),
+        ("тп «Алаколь»", ("Алакөл (авто)", "Алаколь (авто)")),
+        ("тп «Темиржол»", ("Теміржол ж/д", "Темиржол ж/д")),
+        ("тп «Алтынколь-жол»", ("Алтынкөл-жол ж/д", "Алтынколь-жол ж/д")),
+        ("тп «Нур Жолы»", ("Нұржолы (авто)", "Нур жолы (авто)", "Нуржолы (авто)")),
+        ("г. Астана склад", ("г. Астана",)),
+        (
+            "г. Караганда склад",
+            ("Карагандинская область\n г. Қарағанды\n (склад авто по взаимке)",),
+        ),
+        ("г. Шымкент, склад", ("г. Шымкент",)),
+        (
+            "г. Петропавловск, склад",
+            ("Северо-Казахстанская область\n г. Петропавл\n (склад авто по взаимке)",),
+        ),
+        (
+            "г. Кокшетау, склад",
+            ("Акмолинская область\n г. Көкшетау\n (склад авто по взаимке)",),
+        ),
+        (
+            "г. Уральск, склад",
+            ("Западно-Казахстанская область\n г. Орал\n (склад авто по взаимке)",),
+        ),
+        (
+            "г. Актобе, склад",
+            ("Актюбинская область\n г. Ақтөбе\n (склад авто по взаимке)",),
+        ),
+        (
+            "г. Павлодар склад",
+            ("Павлодарская область\n г. Павлодар\n (склад авто по взаимке)",),
+        ),
+        (
+            "г. Оскемен, склад",
+            ("Восточно- Казахстанская область\n г. Өскемен\n (склад авто по взаимке)",),
+        ),
+        (
+            "г. Семей, склад",
+            ("Область Абай\n г. Семей\n (склад авто по взаимке)",),
+        ),
+        ("г. Актау", ("г. Ақтау", "г. Актау")),
+        ("Атырауская область", ("Атырауская область",)),
+        (
+            "ЗКО",
+            ("Западно-Казахстанская область\n г. Орал\n (склад авто по взаимке)",),
+        ),
+        (
+            "Костанайская область",
+            ("Костанайская область\n г. Костанай\n (склад авто по взаимке)",),
+        ),
+    ]
+
+    # Эти точки есть в источнике, но во втором шаблоне отчета не выводятся:
+    # Жибек жолы, Алматинская область, Область Улытау, Кызылординская область,
+    # Жамбылская область, Область Жетису, Капланбек.
+
+    rows = [
+        {
+            "Точка": output_name,
+            "Количество НП": value_for(*source_names),
+        }
+        for output_name, source_names in output_points
+    ]
 
     print(f"[builders.build_table4] rows={len(rows)}")
-
-    for row in rows:
-        print(row)
 
     return {
         "table": "Таблица4",
         "stage": "data-only",
+        "date": actual_date,
+        "date_label": actual_date.strftime("%d.%m.%Y"),
+        "date_label_short": actual_date.strftime("%d.%m.%y"),
         "rows": rows,
     }
 

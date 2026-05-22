@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font, Alignment
+from openpyxl.styles import Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 
@@ -329,28 +329,50 @@ def _write_table3(ws, t: Dict[str, Any]) -> None:
 def _write_table4(ws, t: Dict[str, Any]) -> None:
 
     rows = t.get("rows", []) or []
+    date_label = str(
+        t.get("date_label_short") or t.get("date_label", "") or ""
+    ).strip()
 
-    headers = ["Точка", "Количество НП"]
-
-    row = 1
-
-    row = _write_section_title(
-        ws,
-        "Распределение НП по РК",
-        row,
-        span_cols=2,
-    )
+    headers = [
+        "Пункты\nпропуска/региональ\nные склады",
+        f"НП на {date_label}" if date_label else "НП",
+    ]
+    data_rows = [
+        {
+            headers[0]: row.get("Точка"),
+            headers[1]: row.get("Количество НП"),
+        }
+        for row in rows
+    ]
 
     row = _write_rows_as_table(
         ws,
         headers=headers,
-        rows=rows,
-        start_row=row,
+        rows=data_rows,
+        start_row=1,
     )
 
-    ws.freeze_panes = "A3"
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    _set_col_widths(ws, headers)
+    for row_cells in ws.iter_rows(min_row=1, max_row=row - 1, min_col=1, max_col=2):
+        for cell in row_cells:
+            cell.border = border
+            cell.alignment = Alignment(
+                horizontal="center" if cell.column == 2 else "left",
+                vertical="center",
+                wrap_text=True,
+            )
+
+            if cell.row == 1 or cell.column == 2:
+                cell.font = Font(bold=True)
+
+    ws.row_dimensions[1].height = 42
+    ws.column_dimensions["A"].width = 30
+    ws.column_dimensions["B"].width = 18
+
+    ws.freeze_panes = "A2"
+
 
 
 def _write_table5(ws, t: Dict[str, Any]) -> None:

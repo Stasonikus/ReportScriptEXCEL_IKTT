@@ -27,7 +27,7 @@ from normalize import normalize_report
 REPORT_PATTERN = re.compile(r"^report_.*\.xlsx$", re.IGNORECASE)
 
 TABLE4_PATTERN = re.compile(
-    r"^готовность\s*апп.*территория.*\.xlsx$",
+    r"^готовность.*апп.*территория.*\.xlsx$",
     re.IGNORECASE,
 )
 
