@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
+from pathlib import Path
 from typing import Any, Dict
 
 
@@ -408,7 +410,12 @@ def build_table2(report_1_norm: Any, cfg: Dict[str, Any]) -> Any:
     }
 
 
-def build_table3(report_1_norm: Any, cfg: Dict[str, Any]) -> Any:
+def build_table3(
+    report_1_norm: Any,
+    cfg: Dict[str, Any],
+    rail_raw: Any | None = None,
+    data_dir: Path | str | None = None,
+) -> Any:
     """
     Т3: Статистические данные завершенных перевозок
     Новая форма: 4 отдельных блока, без матрицы.
@@ -574,6 +581,180 @@ def build_table3(report_1_norm: Any, cfg: Dict[str, Any]) -> Any:
         key = (frm_s, to_s)
         flows[key] = flows.get(key, 0) + val
 
+    def norm_text(value: Any) -> str:
+        if value is None:
+            return ""
+
+        s = str(value).strip().lower()
+        s = s.replace("ё", "е")
+        s = s.replace("–", "-").replace("—", "-")
+        s = re.sub(r"[\"'«»()]", " ", s)
+        s = re.sub(r"\s+", " ", s)
+        return s.strip()
+
+    def parse_company_id(value: Any) -> str:
+        if value is None:
+            return ""
+
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+
+        return str(value).strip()
+
+    def load_locations(country_code: str) -> set[str]:
+        if data_dir is None:
+            base_dir = Path(__file__).resolve().parent / "data"
+        else:
+            base_dir = Path(data_dir)
+
+        path = base_dir / f"locations_{country_code}.json"
+        if not path.exists():
+            print(f"[builders.build_table3] WARN: locations file not found: {path}")
+            return set()
+
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[builders.build_table3] WARN: cannot read {path}: {exc}")
+            return set()
+
+        return {
+            norm_text(item)
+            for item in data.get("locations", [])
+            if norm_text(item)
+        }
+
+    location_sets = {
+        "RU": load_locations("RF"),
+        "BY": load_locations("RB"),
+        "KG": load_locations("KG"),
+        "KZ": load_locations("KZ"),
+    }
+
+    def location_country(value: Any, allowed_codes: set[str]) -> str | None:
+        key = norm_text(value)
+        if not key:
+            return None
+
+        for code in ["RU", "BY", "KG", "KZ"]:
+            if code not in allowed_codes:
+                continue
+
+            locations = location_sets.get(code, set())
+            if key in locations:
+                return code
+
+        # Fallback for obvious names when the JSON dictionary is incomplete.
+        if "RU" in allowed_codes and any(x in key for x in ["росси", "себеж", "рф"]):
+            return "RU"
+        if "BY" in allowed_codes and any(x in key for x in ["беларус", "брест", "минск", "гомел", "рб"]):
+            return "BY"
+        if "KG" in allowed_codes and not location_sets.get("KG") and any(x in key for x in ["кыргыз", "киргиз", "кг", "аламедин", "бишкек"]):
+            return "KG"
+        if "KZ" in allowed_codes and any(x in key for x in ["казахстан", "т/п", "алматы", "темиржол", "алтынколь", "болашак"]):
+            return "KZ"
+
+        return None
+
+    def find_rail_header(ws_rail) -> int | None:
+        for row_idx in range(1, ws_rail.max_row + 1):
+            values = [ws_rail.cell(row=row_idx, column=c).value for c in range(1, ws_rail.max_column + 1)]
+            if "Владелец записи" in values and "Статус" in values and "company_id" in values:
+                return row_idx
+
+        return None
+
+    def calc_rail_flows() -> tuple[Dict[str, int], Dict[str, int]]:
+        rail_out = {"RU": 0, "BY": 0, "KG": 0, "ARM": 0}
+        rail_in = {"RU": 0, "BY": 0, "KG": 0, "ARM": 0}
+
+        if rail_raw is None:
+            print("[builders.build_table3] WARN: ЖД Выгрузка.xlsx not found; rail data = 0")
+            return rail_out, rail_in
+
+        ws_rail = rail_raw.get("ws") if isinstance(rail_raw, dict) else None
+        if ws_rail is None:
+            print("[builders.build_table3] WARN: rail workbook is not readable; rail data = 0")
+            return rail_out, rail_in
+
+        rail_header = find_rail_header(ws_rail)
+        if rail_header is None:
+            print("[builders.build_table3] WARN: rail header row not found; rail data = 0")
+            return rail_out, rail_in
+
+        rail_headers: Dict[str, int] = {}
+        for c in range(1, ws_rail.max_column + 1):
+            v = ws_rail.cell(row=rail_header, column=c).value
+            if isinstance(v, str) and v.strip():
+                rail_headers[v.strip().lower()] = c
+
+        def rail_col(name: str) -> int | None:
+            return rail_headers.get(name.lower())
+
+        col_owner = rail_col("Владелец записи")
+        col_status = rail_col("Статус")
+        col_company_id = rail_col("company_id")
+        col_start = rail_col("Start waypoint")
+        col_end = rail_col("End waypoint")
+
+        if not all([col_owner, col_status, col_company_id, col_start, col_end]):
+            print("[builders.build_table3] WARN: required rail columns not found; rail data = 0")
+            return rail_out, rail_in
+
+        out_owners = {
+            norm_text("ТОО «Институт космической техники и технологий»"),
+            norm_text("ЭСФ ESF"),
+            norm_text("ТТН TTN"),
+            norm_text("КГД Интеграция КЕДЕН KEDEN"),
+            norm_text("КЕДЕН KEDEN"),
+        }
+        in_owner_by_country = {
+            norm_text("Белтаможсервис (оператор)"): "BY",
+            norm_text('ООО "ЦРЦП" (оператор)'): "RU",
+        }
+
+        scanned = 0
+        used_out = 0
+        used_in = 0
+
+        for row_idx in range(rail_header + 1, ws_rail.max_row + 1):
+            status = norm_text(ws_rail.cell(row=row_idx, column=col_status).value)
+            if status != "finished":
+                continue
+
+            company_id = parse_company_id(ws_rail.cell(row=row_idx, column=col_company_id).value)
+            if company_id == "1":
+                continue
+
+            owner = norm_text(ws_rail.cell(row=row_idx, column=col_owner).value)
+            end_value = ws_rail.cell(row=row_idx, column=col_end).value
+            scanned += 1
+
+            if owner in out_owners:
+                country = location_country(end_value, {"RU", "BY", "KG"})
+                if country in {"RU", "BY", "KG"}:
+                    rail_out[country] += 1
+                    used_out += 1
+                continue
+
+            in_country = in_owner_by_country.get(owner)
+            if in_country is not None:
+                end_country = location_country(end_value, {"KZ"})
+                if end_country == "KZ" or end_country is None:
+                    rail_in[in_country] += 1
+                    used_in += 1
+
+        print(
+            "[builders.build_table3] rail rows: "
+            f"finished_no_tests={scanned}, out_used={used_out}, in_used={used_in}"
+        )
+        print(f"[builders.build_table3] rail_out={rail_out}")
+        print(f"[builders.build_table3] rail_in={rail_in}")
+
+        return rail_out, rail_in
+
+    rail_out_values, rail_in_values = calc_rail_flows()
+
     country_names = {
         "RU": "Российская Федерация",
         "BY": "Республика Беларусь",
@@ -598,10 +779,12 @@ def build_table3(report_1_norm: Any, cfg: Dict[str, Any]) -> Any:
     # ---- 3) Авто: из РК
     auto_out_rows: list[Dict[str, Any]] = []
     for code in ["RU", "BY", "KG", "ARM"]:
+        mixed_value = flows.get(("KZ", code), 0)
+        rail_value = rail_out_values.get(code, 0)
         auto_out_rows.append(
             {
                 "Направление": out_titles[code],
-                "Количество": flows.get(("KZ", code), 0),
+                "Количество": max(mixed_value - rail_value, 0),
             }
         )
 
@@ -616,10 +799,12 @@ def build_table3(report_1_norm: Any, cfg: Dict[str, Any]) -> Any:
     # ---- 4) Авто: в РК
     auto_in_rows: list[Dict[str, Any]] = []
     for code in ["RU", "BY", "KG", "ARM"]:
+        mixed_value = flows.get((code, "KZ"), 0)
+        rail_value = rail_in_values.get(code, 0)
         auto_in_rows.append(
             {
                 "Направление": in_titles[code],
-                "Количество": flows.get((code, "KZ"), 0),
+                "Количество": max(mixed_value - rail_value, 0),
             }
         )
 
@@ -633,16 +818,16 @@ def build_table3(report_1_norm: Any, cfg: Dict[str, Any]) -> Any:
 
     auto_total = auto_out_total + auto_in_total
 
-    # ---- 5) Ж/Д: пока нули, но уже в новой форме
+    # ---- 5) Ж/Д: отдельный источник "ЖД Выгрузка.xlsx"
     rail_out_rows: list[Dict[str, Any]] = []
     for code in ["RU", "BY", "KG", "ARM"]:
         rail_out_rows.append(
             {
                 "Направление": out_titles[code],
-                "Количество": 0,
+                "Количество": rail_out_values.get(code, 0),
             }
         )
-    rail_out_total = 0
+    rail_out_total = sum(r["Количество"] for r in rail_out_rows)
     rail_out_rows.append(
         {
             "Направление": "Итого",
@@ -655,10 +840,10 @@ def build_table3(report_1_norm: Any, cfg: Dict[str, Any]) -> Any:
         rail_in_rows.append(
             {
                 "Направление": in_titles[code],
-                "Количество": 0,
+                "Количество": rail_in_values.get(code, 0),
             }
         )
-    rail_in_total = 0
+    rail_in_total = sum(r["Количество"] for r in rail_in_rows)
     rail_in_rows.append(
         {
             "Направление": "Итого",
@@ -981,6 +1166,76 @@ def build_table4(report_1_norm: Any, report_2_raw: Any, cfg: Dict[str, Any]) -> 
         for output_name, source_names in output_points
     ]
 
+    def calc_used_np_total() -> int:
+        ws_report = report_1_norm.get("ws") if isinstance(report_1_norm, dict) else None
+        if ws_report is None:
+            print("[builders.build_table4] WARN: report sheet not found for used NP total")
+            return 0
+
+        start_row = None
+        header_row = None
+        point_col = None
+        total_col = None
+        max_scan_cols = min(ws_report.max_column, 40)
+
+        for r in range(1, ws_report.max_row + 1):
+            for c in range(1, max_scan_cols + 1):
+                value = ws_report.cell(row=r, column=c).value
+                if isinstance(value, str) and "статистика пломб по типам перевозки" in value.lower():
+                    start_row = r
+                    break
+            if start_row is not None:
+                break
+
+        if start_row is None:
+            print("[builders.build_table4] WARN: used NP source block not found")
+            return 0
+
+        for r in range(start_row + 1, min(ws_report.max_row, start_row + 8) + 1):
+            for c in range(1, max_scan_cols + 1):
+                value = ws_report.cell(row=r, column=c).value
+                if isinstance(value, str) and value.strip().lower() == "пункт отправления":
+                    header_row = r
+                    point_col = c
+                    break
+            if header_row is not None:
+                break
+
+        if header_row is None or point_col is None:
+            print("[builders.build_table4] WARN: used NP header row not found")
+            return 0
+
+        for c in range(point_col + 1, ws_report.max_column + 1):
+            value = ws_report.cell(row=header_row, column=c).value
+            if isinstance(value, str) and value.strip().lower() == "total":
+                total_col = c
+                break
+
+        if total_col is None:
+            print("[builders.build_table4] WARN: used NP Total column not found")
+            return 0
+
+        total = 0
+        for r in range(header_row + 1, ws_report.max_row + 1):
+            point_value = ws_report.cell(row=r, column=point_col).value
+            point_key = normalize_name(point_value)
+
+            if not point_key:
+                continue
+
+            if point_key in {"все", "итого"}:
+                break
+
+            if point_key == normalize_name("Карасу"):
+                continue
+
+            total += parse_count(ws_report.cell(row=r, column=total_col).value)
+
+        print(f"[builders.build_table4] used_np_total={total}")
+        return total
+
+    used_np_total = calc_used_np_total()
+
     print(f"[builders.build_table4] rows={len(rows)}")
 
     return {
@@ -989,6 +1244,7 @@ def build_table4(report_1_norm: Any, report_2_raw: Any, cfg: Dict[str, Any]) -> 
         "date": actual_date,
         "date_label": actual_date.strftime("%d.%m.%Y"),
         "date_label_short": actual_date.strftime("%d.%m.%y"),
+        "used_np_total": used_np_total,
         "rows": rows,
     }
 

@@ -60,6 +60,23 @@ def read_report_2(path: Path) -> Dict[str, Any]:
     }
 
 
+def read_rail_report(path: Path) -> Dict[str, Any]:
+
+    if not path.exists():
+        raise FileNotFoundError(f"rail report not found: {path}")
+
+    wb = load_workbook(path, data_only=True)
+    ws = wb.active
+
+    return {
+        "path": str(path),
+        "workbook": wb,
+        "ws": ws,
+        "sheet_name": ws.title,
+        "sheetnames": wb.sheetnames,
+    }
+
+
 def write_output_test(out_path: Path, sheet_name: str = "Таблица1") -> None:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -367,9 +384,23 @@ def _write_table4(ws, t: Dict[str, Any]) -> None:
             if cell.row == 1 or cell.column == 2:
                 cell.font = Font(bold=True)
 
+    used_np_total = t.get("used_np_total", 0)
+    ws.cell(row=1, column=4, value="Использованно НП")
+    ws.cell(row=2, column=4, value=used_np_total)
+
+    for cell in (ws.cell(row=1, column=4), ws.cell(row=2, column=4)):
+        cell.border = border
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+            wrap_text=True,
+        )
+
     ws.row_dimensions[1].height = 42
     ws.column_dimensions["A"].width = 30
     ws.column_dimensions["B"].width = 18
+    ws.column_dimensions["D"].width = 18
 
     ws.freeze_panes = "A2"
 
