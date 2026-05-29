@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 from builders import (
+    build_rail_registered_count,
     build_table1,
     build_table2,
     build_table3,
@@ -142,6 +143,25 @@ def _find_rail_file(in_dir: Path) -> Path | None:
     return found[0]
 
 
+def _confirm_continue_without(missing_names: list[str]) -> bool:
+
+    if not missing_names:
+        return True
+
+    print("\n[main] Не найдены дополнительные файлы:")
+    for name in missing_names:
+        print(" -", name)
+
+    while True:
+        answer = input("Продолжить без этих файлов? (y/n): ").strip().lower()
+        if answer in {"y", "yes", "д", "да"}:
+            return True
+        if answer in {"n", "no", "н", "нет"}:
+            return False
+
+        print("Введите y или n.")
+
+
 def _move_processed(src: Path, in_dir: Path):
 
     processed_dir = in_dir / "processed"
@@ -149,8 +169,13 @@ def _move_processed(src: Path, in_dir: Path):
 
     ts = dt.datetime.now().strftime("%Y%m%d_%H%M")
 
-    new_name = src.stem + f"__processed_{ts}" + src.suffix
-    dst = processed_dir / new_name
+    base_name = src.stem + f"__processed_{ts}"
+    dst = processed_dir / f"{base_name}{src.suffix}"
+
+    counter = 1
+    while dst.exists():
+        dst = processed_dir / f"{base_name}(+{counter}){src.suffix}"
+        counter += 1
 
     shutil.move(str(src), str(dst))
 
@@ -174,6 +199,16 @@ def main() -> int:
 
     table4_file = _find_table4_file(in_dir)
     rail_file = _find_rail_file(in_dir)
+
+    missing_optional = []
+    if table4_file is None:
+        missing_optional.append("Готовность АПП_ЖД_Территория.xlsx")
+    if rail_file is None:
+        missing_optional.append("ЖД Выгрузка.xlsx")
+
+    if not _confirm_continue_without(missing_optional):
+        print("[main] execution cancelled by user")
+        return 1
 
     out_path = _make_output_filename(out_dir)
 
@@ -253,6 +288,8 @@ def main() -> int:
     for row in t1["rows"]:
         print(row)
 
+    t1["rail_registered_total"] = build_rail_registered_count(rail_source)
+
     t2 = build_table2(r1_norm, cfg.normalization)
 
     t3 = build_table3(
@@ -270,28 +307,22 @@ def main() -> int:
     # table 4
     # -----------------------
 
-    if table4_source is not None:
+    try:
 
-        try:
+        t4 = build_table4(
+            r1_norm,
+            table4_source,
+            cfg.normalization,
+        )
 
-            t4 = build_table4(
-                r1_norm,
-                table4_source,
-                cfg.normalization,
-            )
+        tables.append(t4)
 
-            tables.append(t4)
+        print("[main] Таблица4 created")
 
-            print("[main] Таблица4 created")
+    except Exception as e:
 
-        except Exception as e:
-
-            print("[main] Таблица4 build FAIL")
-            print(e)
-
-    else:
-
-        print("[main] Таблица4 skipped")
+        print("[main] Таблица4 build FAIL")
+        print(e)
 
     tables.append(t5)
 

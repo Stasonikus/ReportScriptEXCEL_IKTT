@@ -12,6 +12,93 @@ from typing import Any, Dict
 DEBUG_PP: str | None = None
 
 
+def build_rail_registered_count(rail_raw: Any | None) -> int | None:
+    if rail_raw is None:
+        return None
+
+    ws = rail_raw.get("ws") if isinstance(rail_raw, dict) else None
+    if ws is None:
+        return None
+
+    def norm_text(value: Any) -> str:
+        if value is None:
+            return ""
+
+        s = str(value).strip().lower()
+        s = s.replace("ё", "е")
+        s = re.sub(r"[\"'«»()]", " ", s)
+        s = re.sub(r"\s+", " ", s)
+        return s.strip()
+
+    def parse_company_id(value: Any) -> str:
+        if value is None:
+            return ""
+
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+
+        return str(value).strip()
+
+    header_row = None
+    for row_idx in range(1, ws.max_row + 1):
+        values = [ws.cell(row=row_idx, column=c).value for c in range(1, ws.max_column + 1)]
+        if "Владелец записи" in values and "Статус" in values and "company_id" in values:
+            header_row = row_idx
+            break
+
+    if header_row is None:
+        print("[builders.build_rail_registered_count] WARN: rail header row not found")
+        return None
+
+    header_map: Dict[str, int] = {}
+    for c in range(1, ws.max_column + 1):
+        value = ws.cell(row=header_row, column=c).value
+        if isinstance(value, str) and value.strip():
+            header_map[value.strip().lower()] = c
+
+    col_owner = header_map.get("владелец записи")
+    col_status = header_map.get("статус")
+    col_company_id = header_map.get("company_id")
+
+    if not all([col_owner, col_status, col_company_id]):
+        print("[builders.build_rail_registered_count] WARN: required rail columns not found")
+        return None
+
+    allowed_owners = {
+        norm_text("КЕДЕН KEDEN"),
+        norm_text("ТОО «Институт космической техники и технологий»"),
+        norm_text("ЭСФ ESF"),
+        norm_text("ТТН TTN"),
+        norm_text("КГД Интеграция"),
+        norm_text("КГД Интеграция КЕДЕН KEDEN"),
+    }
+    allowed_statuses = {"activated", "finished"}
+
+    total = 0
+    by_owner: Dict[str, int] = {}
+
+    for row_idx in range(header_row + 1, ws.max_row + 1):
+        owner_value = ws.cell(row=row_idx, column=col_owner).value
+        owner = norm_text(owner_value)
+        if owner not in allowed_owners:
+            continue
+
+        status = norm_text(ws.cell(row=row_idx, column=col_status).value)
+        if status not in allowed_statuses:
+            continue
+
+        company_id = parse_company_id(ws.cell(row=row_idx, column=col_company_id).value)
+        if company_id == "1":
+            continue
+
+        total += 1
+        owner_name = str(owner_value).strip() if owner_value is not None else ""
+        by_owner[owner_name] = by_owner.get(owner_name, 0) + 1
+
+    print(f"[builders.build_rail_registered_count] total={total}, by_owner={by_owner}")
+    return total
+
+
 def build_table1(report_1_norm: Any, cfg: Dict[str, Any], tp_zhd_list_t1: list[str]) -> Any:
     """
     Т1 — реализовано ранее (v2):
@@ -178,6 +265,16 @@ def build_table1(report_1_norm: Any, cfg: Dict[str, Any], tp_zhd_list_t1: list[s
         vals = pp_vals.get(pp, {"РФ": 0, "РБ": 0, "КР": 0, "РА": 0})
         total = int(vals["РФ"]) + int(vals["РБ"]) + int(vals["КР"]) + int(vals["РА"])
         rows.append({"ТП/ЖД": pp, "РФ": int(vals["РФ"]), "РБ": int(vals["РБ"]), "КР": int(vals["КР"]), "РА": int(vals["РА"]), "Итого": total})
+
+    summary = {
+        "ТП/ЖД": "Итого",
+        "РФ": sum(int(row["РФ"]) for row in rows),
+        "РБ": sum(int(row["РБ"]) for row in rows),
+        "КР": sum(int(row["КР"]) for row in rows),
+        "РА": sum(int(row["РА"]) for row in rows),
+        "Итого": sum(int(row["Итого"]) for row in rows),
+    }
+    rows.append(summary)
 
     print(f"[builders.build_table1] built rows={len(rows)}")
     return {"table": "Таблица1", "stage": "data-only", "rows": rows}
@@ -977,13 +1074,15 @@ def build_table3(
     }
 
 
-def build_table4(report_1_norm: Any, report_2_raw: Any, cfg: Dict[str, Any]) -> Any:
+def build_table4(report_1_norm: Any, report_2_raw: Any | None, cfg: Dict[str, Any]) -> Any:
 
     print("[builders.build_table4] start")
 
-    ws = report_2_raw["ws"]
-
-    print(f"[builders.build_table4] sheet = {ws.title}")
+    ws = report_2_raw.get("ws") if isinstance(report_2_raw, dict) else None
+    if ws is not None:
+        print(f"[builders.build_table4] sheet = {ws.title}")
+    else:
+        print("[builders.build_table4] WARN: APP/JD readiness file not found; left table will be a template")
 
     def normalize_name(value: Any) -> str:
         if value is None:
@@ -1041,54 +1140,54 @@ def build_table4(report_1_norm: Any, report_2_raw: Any, cfg: Dict[str, Any]) -> 
 
         return 0
 
-    date_candidates: list[tuple[int, dt.date]] = []
-
-    for c in range(2, ws.max_column + 1):
-        d = parse_date(ws.cell(row=2, column=c).value)
-        if d is not None:
-            date_candidates.append((c, d))
-
-    today = dt.date.today()
-    actual_candidates = [(c, d) for c, d in date_candidates if d <= today]
-
-    if actual_candidates:
-        count_col, actual_date = max(actual_candidates, key=lambda x: (x[1], x[0]))
-    elif date_candidates:
-        count_col, actual_date = max(date_candidates, key=lambda x: (x[1], x[0]))
-    else:
-        print("[builders.build_table4] FAIL: date columns not found in row 2")
-        return {
-            "table": "Таблица4",
-            "stage": "data-only",
-            "rows": [],
-            "date": None,
-            "date_label": "",
-        }
-
-    print(
-        f"[builders.build_table4] actual_date={actual_date:%d.%m.%Y} "
-        f"count_col={count_col}"
-    )
-
     source_values: Dict[str, int] = {}
+    actual_date: dt.date | None = None
+    count_col: int | None = None
 
-    for r in range(3, ws.max_row + 1):
-        point = ws.cell(row=r, column=1).value
-        key = normalize_name(point)
+    if ws is not None:
+        date_candidates: list[tuple[int, dt.date]] = []
 
-        if not key:
-            continue
+        for c in range(2, ws.max_column + 1):
+            d = parse_date(ws.cell(row=2, column=c).value)
+            if d is not None:
+                date_candidates.append((c, d))
 
-        source_values[key] = parse_count(ws.cell(row=r, column=count_col).value)
+        today = dt.date.today()
+        actual_candidates = [(c, d) for c, d in date_candidates if d <= today]
+
+        if actual_candidates:
+            count_col, actual_date = max(actual_candidates, key=lambda x: (x[1], x[0]))
+        elif date_candidates:
+            count_col, actual_date = max(date_candidates, key=lambda x: (x[1], x[0]))
+        else:
+            print("[builders.build_table4] WARN: date columns not found in row 2; left table will be a template")
+
+        if count_col is not None and actual_date is not None:
+            print(
+                f"[builders.build_table4] actual_date={actual_date:%d.%m.%Y} "
+                f"count_col={count_col}"
+            )
+
+            for r in range(3, ws.max_row + 1):
+                point = ws.cell(row=r, column=1).value
+                key = normalize_name(point)
+
+                if not key:
+                    continue
+
+                source_values[key] = parse_count(ws.cell(row=r, column=count_col).value)
 
     def value_for(*source_names: str) -> int:
+        if not source_values:
+            return "-"
+
         for source_name in source_names:
             key = normalize_name(source_name)
             if key in source_values:
                 return source_values[key]
 
         print(f"[builders.build_table4] WARN: source row not found: {source_names[0]}")
-        return 0
+        return "-"
 
     output_points = [
         ("тп «Тажен»", ("Тәжен (авто)", "Тажен (авто)")),
@@ -1166,11 +1265,11 @@ def build_table4(report_1_norm: Any, report_2_raw: Any, cfg: Dict[str, Any]) -> 
         for output_name, source_names in output_points
     ]
 
-    def calc_used_np_total() -> int:
+    def parse_used_np_source() -> tuple[Dict[str, int], int]:
         ws_report = report_1_norm.get("ws") if isinstance(report_1_norm, dict) else None
         if ws_report is None:
             print("[builders.build_table4] WARN: report sheet not found for used NP total")
-            return 0
+            return {}, 0
 
         start_row = None
         header_row = None
@@ -1189,7 +1288,7 @@ def build_table4(report_1_norm: Any, report_2_raw: Any, cfg: Dict[str, Any]) -> 
 
         if start_row is None:
             print("[builders.build_table4] WARN: used NP source block not found")
-            return 0
+            return {}, 0
 
         for r in range(start_row + 1, min(ws_report.max_row, start_row + 8) + 1):
             for c in range(1, max_scan_cols + 1):
@@ -1203,7 +1302,7 @@ def build_table4(report_1_norm: Any, report_2_raw: Any, cfg: Dict[str, Any]) -> 
 
         if header_row is None or point_col is None:
             print("[builders.build_table4] WARN: used NP header row not found")
-            return 0
+            return {}, 0
 
         for c in range(point_col + 1, ws_report.max_column + 1):
             value = ws_report.cell(row=header_row, column=c).value
@@ -1213,9 +1312,10 @@ def build_table4(report_1_norm: Any, report_2_raw: Any, cfg: Dict[str, Any]) -> 
 
         if total_col is None:
             print("[builders.build_table4] WARN: used NP Total column not found")
-            return 0
+            return {}, 0
 
         total = 0
+        values: Dict[str, int] = {}
         for r in range(header_row + 1, ws_report.max_row + 1):
             point_value = ws_report.cell(row=r, column=point_col).value
             point_key = normalize_name(point_value)
@@ -1229,12 +1329,98 @@ def build_table4(report_1_norm: Any, report_2_raw: Any, cfg: Dict[str, Any]) -> 
             if point_key == normalize_name("Карасу"):
                 continue
 
-            total += parse_count(ws_report.cell(row=r, column=total_col).value)
+            value = parse_count(ws_report.cell(row=r, column=total_col).value)
+            total += value
+            values[point_key] = values.get(point_key, 0) + value
 
         print(f"[builders.build_table4] used_np_total={total}")
-        return total
+        return values, total
 
-    used_np_total = calc_used_np_total()
+    used_np_values, used_np_total = parse_used_np_source()
+
+    def used_np_for(*source_names: str) -> tuple[int | None, set[str]]:
+        matched_keys: set[str] = set()
+        total = 0
+
+        for source_name in source_names:
+            key = normalize_name(source_name)
+            if key in used_np_values and key not in matched_keys:
+                matched_keys.add(key)
+                total += used_np_values[key]
+
+        if not matched_keys:
+            return None, matched_keys
+
+        return total, matched_keys
+
+    used_np_specs = [
+        ("тп «Тажен»", ('Т/П "ТАЖЕН"',)),
+        ("тп «Темир-Баба»", ("ТП «ТЕМИР-БАБА»",)),
+        ("тп «Болашак»", ()),
+        ("тп «Курык»", ("ТП «КУРЫК» ЖД",)),
+        ("тп «Морпорт»", ()),
+        ("тп «Оазис»", ()),
+        ("тп «Бахты»", ("ТП «БАХТЫ»",)),
+        ("тп «Майкапчагай»", ("ТП «МАЙКАПЧАГАЙ»",)),
+        ("тп «Б. Конысбаева»", ("Т/П ИМЕНИ БАУЫРЖАНА КОНЫСБАЕВА",)),
+        ("тп «Казыгурт»", ('Т/П "КАЗЫГУРТ"',)),
+        ("тп «ст. Сарыагаш»", ()),
+        ("тп «Атамекен»", ('Т/П "АТАМЕКЕН"',)),
+        ("тп «Калжат»", ("ТП «КАЛЖАТ»",)),
+        ("тп «Алаколь»", ("ТП «АЛАКОЛЬ»",)),
+        ("тп «Темиржол»", ('Т/П "ТЕМИРЖОЛ"',)),
+        ("тп «Алтынколь-жол»", ('Т/П "АЛТЫНКОЛЬ-ЖОЛ"',)),
+        ("тп «Нур Жолы»", ('Т/П "НУР ЖОЛЫ"',)),
+        ("г. Астана склад", ()),
+        ("г. Караганда склад", ()),
+        ("г. Шымкент, склад", ()),
+        ("г. Петропавловск, склад", ()),
+        ("г. Кокшетау, склад", ()),
+        ("г. Уральск, склад", ()),
+        ("г. Актобе, склад", ()),
+        ("г. Павлодар склад", ()),
+        ("г. Оскемен, склад", ()),
+        ("г. Семей, склад", ()),
+        ("г. Актау", ()),
+        ("Атырауская область", ()),
+        ("ЗКО", ()),
+        ("Костанайская область", ()),
+    ]
+
+    used_np_rows: list[Dict[str, Any]] = []
+    selected_total = 0
+    selected_keys: set[str] = set()
+
+    for title, source_names in used_np_specs:
+        value, matched_keys = used_np_for(*source_names)
+        selected_keys.update(matched_keys)
+        if value is not None:
+            selected_total += value
+
+        used_np_rows.append(
+            {
+                "Пункт": title,
+                "Количество": value if value is not None else "-",
+            }
+        )
+
+    territory_total = sum(
+        value
+        for key, value in used_np_values.items()
+        if key not in selected_keys
+    )
+    used_np_rows.append(
+        {
+            "Пункт": "Навешивания на территории РК",
+            "Количество": territory_total,
+        }
+    )
+    used_np_rows.append(
+        {
+            "Пункт": "Итого",
+            "Количество": used_np_total,
+        }
+    )
 
     print(f"[builders.build_table4] rows={len(rows)}")
 
@@ -1242,9 +1428,10 @@ def build_table4(report_1_norm: Any, report_2_raw: Any, cfg: Dict[str, Any]) -> 
         "table": "Таблица4",
         "stage": "data-only",
         "date": actual_date,
-        "date_label": actual_date.strftime("%d.%m.%Y"),
-        "date_label_short": actual_date.strftime("%d.%m.%y"),
+        "date_label": actual_date.strftime("%d.%m.%Y") if actual_date else "",
+        "date_label_short": actual_date.strftime("%d.%m.%y") if actual_date else "",
         "used_np_total": used_np_total,
+        "used_np_rows": used_np_rows,
         "rows": rows,
     }
 

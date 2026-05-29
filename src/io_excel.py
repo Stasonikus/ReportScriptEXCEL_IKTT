@@ -147,6 +147,7 @@ def _write_rows_as_table(
     rows: List[Dict[str, Any]],
     start_row: int = 1,
     start_col: int = 1,
+    dash_zero: bool = False,
 ) -> int:
 
     for j, h in enumerate(headers, start=start_col):
@@ -164,13 +165,28 @@ def _write_rows_as_table(
 
     for row in rows:
 
+        is_summary = str(row.get(headers[0], "")).strip().lower() in {"итого", "все"}
+
         for j, h in enumerate(headers, start=start_col):
 
-            ws.cell(
+            value = row.get(h, None)
+            if dash_zero and isinstance(value, (int, float)) and value == 0:
+                value = "-"
+
+            cell = ws.cell(
                 row=r_out,
                 column=j,
-                value=row.get(h, None),
+                value=value,
             )
+
+            if value == "-" or isinstance(value, (int, float)):
+                cell.alignment = Alignment(
+                    horizontal="center",
+                    vertical="center",
+                )
+
+            if is_summary:
+                cell.font = Font(bold=True)
 
         r_out += 1
 
@@ -367,6 +383,7 @@ def _write_table4(ws, t: Dict[str, Any]) -> None:
         headers=headers,
         rows=data_rows,
         start_row=1,
+        dash_zero=True,
     )
 
     thin = Side(style="thin", color="000000")
@@ -384,11 +401,15 @@ def _write_table4(ws, t: Dict[str, Any]) -> None:
             if cell.row == 1 or cell.column == 2:
                 cell.font = Font(bold=True)
 
-    used_np_total = t.get("used_np_total", 0)
-    ws.cell(row=1, column=4, value="Использованно НП")
-    ws.cell(row=2, column=4, value=used_np_total)
+    used_np_rows = t.get("used_np_rows", []) or []
+    used_headers = [
+        "Пункты пропуска/региональные склады",
+        "",
+        "Кол-во\nиспольз\nованных НП",
+    ]
 
-    for cell in (ws.cell(row=1, column=4), ws.cell(row=2, column=4)):
+    for col, value in zip(range(4, 7), used_headers):
+        cell = ws.cell(row=1, column=col, value=value)
         cell.border = border
         cell.font = Font(bold=True)
         cell.alignment = Alignment(
@@ -397,10 +418,34 @@ def _write_table4(ws, t: Dict[str, Any]) -> None:
             wrap_text=True,
         )
 
+    used_row = 2
+    for item in used_np_rows:
+        is_total = item.get("Пункт") in {"Навешивания на территории РК", "Итого"}
+
+        ws.cell(row=used_row, column=4, value=item.get("Пункт"))
+        ws.cell(row=used_row, column=5, value=None)
+        ws.cell(row=used_row, column=6, value=item.get("Количество"))
+
+        for col in range(4, 7):
+            cell = ws.cell(row=used_row, column=col)
+            cell.border = border
+            cell.alignment = Alignment(
+                horizontal="center" if col == 6 else "left",
+                vertical="center",
+                wrap_text=True,
+            )
+
+            if col == 6 or is_total:
+                cell.font = Font(bold=True)
+
+        used_row += 1
+
     ws.row_dimensions[1].height = 42
     ws.column_dimensions["A"].width = 30
     ws.column_dimensions["B"].width = 18
-    ws.column_dimensions["D"].width = 18
+    ws.column_dimensions["D"].width = 38
+    ws.column_dimensions["E"].width = 8
+    ws.column_dimensions["F"].width = 18
 
     ws.freeze_panes = "A2"
 
@@ -519,7 +564,32 @@ def write_output(out_path: Path, tables: List[Any]) -> None:
 
             headers = list(rows[0].keys()) if rows else ["data"]
 
-        _write_rows_as_table(ws, headers, rows)
+        _write_rows_as_table(
+            ws,
+            headers,
+            rows,
+            dash_zero=(sheet_title == "Таблица1"),
+        )
+
+        if sheet_title == "Таблица1":
+            rail_registered_total = t.get("rail_registered_total")
+
+            title_cell = ws.cell(row=1, column=8, value="Количество оформленных ЖД")
+            value_cell = ws.cell(
+                row=2,
+                column=8,
+                value="" if rail_registered_total is None else rail_registered_total,
+            )
+
+            for cell in (title_cell, value_cell):
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(
+                    horizontal="center",
+                    vertical="center",
+                    wrap_text=True,
+                )
+
+            ws.column_dimensions["H"].width = 24
 
         ws.freeze_panes = "A2"
 
