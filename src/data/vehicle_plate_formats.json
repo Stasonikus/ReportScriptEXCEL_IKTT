@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "description": "Справочник признаков номеров транспортных средств для первичной классификации записей большой выгрузки. Сначала ищется автомобильный номер или номер прицепа, затем железнодорожный номер. Форматы объединяют распространенные варианты стран Евразии, номера физических и юридических лиц, а также прицепы. Справочник расширяется новыми регулярными выражениями без изменения кода.",
+  "classification_priority": ["road", "rail"],
+  "token_separator_pattern": "[,;/|\\n]+",
+  "coverage": {
+    "Kazakhstan": ["physical persons", "legal persons", "trailers", "special series"],
+    "Russia": ["physical persons", "legal persons", "trailers"],
+    "Belarus": ["physical persons", "legal persons", "trailers"],
+    "Kyrgyzstan_Armenia_Uzbekistan_Turkey_and_other_Eurasian_states": ["mixed alphanumeric plate series", "trailers"]
+  },
+  "road_patterns": [
+    {"id": "kz_private_or_business", "description": "Казахстан, частные и юридические лица", "regex": "^\\d{2,3}[A-ZА-Я]{2,3}\\d{2}$"},
+    {"id": "kz_mixed_or_trailer", "description": "Казахстан, прицепы и специальные серии", "regex": "^\\d{2}[A-ZА-Я]\\d{3}[A-ZА-Я]{1,2}$"},
+    {"id": "ru_private", "description": "Россия, частные лица", "regex": "^[A-ZА-Я]\\d{3}[A-ZА-Я]{2}\\d{2,3}$"},
+    {"id": "ru_legal_or_trailer", "description": "Россия, юридические лица и прицепы", "regex": "^[A-ZА-Я]{1,2}\\d{4}[A-ZА-Я]{0,2}\\d{2,3}$"},
+    {"id": "by_private_or_legal", "description": "Беларусь, физические и юридические лица", "regex": "^\\d{4}[A-ZА-Я]{1,2}[- ]?\\d$"},
+    {"id": "kg_am_uz_tr", "description": "Кыргызстан, Армения, Узбекистан, Турция и другие распространенные смешанные серии", "regex": "^(?=.{5,10}$)(?=.*[A-ZА-Я])(?=.*\\d)[A-ZА-Я0-9-]+$"}
+  ],
+  "rail_patterns": [
+    {"id": "iso_container", "description": "Контейнер ISO 6346", "regex": "^[A-Z]{4}\\d{7}$"},
+    {"id": "wagon_number", "description": "Номер железнодорожного вагона", "regex": "^\\d{7,8}$"},
+    {"id": "train_number", "description": "Номер поезда", "regex": "^\\d{3,6}(?:[-/]\\d{1,3})?$"},
+    {"id": "locomotive_number", "description": "Номер локомотива", "regex": "^(?:ТЭ|ТЭМ|ЧМЭ|ВЛ|КЗ|ЭС|ТГМ)[A-ZА-Я]?\\d{3,5}$"}
+  ]
+}

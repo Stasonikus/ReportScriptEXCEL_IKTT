@@ -1,0 +1,15 @@
+@"
+in/
+out/
+build/
+dist/
+.test-tmp/
+.artifact_workspace/
+tools/node_modules/
+node_modules/
+__pycache__/
+*.pyc
+*.xls
+*.xlsx
+*.exe
+"@ | Set-Content -Encoding UTF8 .gitignore
